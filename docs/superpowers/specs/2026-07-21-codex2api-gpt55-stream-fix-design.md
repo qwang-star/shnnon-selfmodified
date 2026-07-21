@@ -38,8 +38,8 @@ provider logic.
 2. Pass `OPENAI_BASE_URL` from Compose to `llm-service`.
 3. Make `OpenAIProvider` construct `AsyncOpenAI` with a base URL whose
    precedence is:
-   - explicit provider configuration;
    - `OPENAI_BASE_URL` environment variable;
+   - explicit provider configuration;
    - OpenAI SDK default.
 4. Permit the unified model configuration translator to pass an OpenAI base
    URL to `OpenAIProvider`.
@@ -72,7 +72,7 @@ transport failures.
 Backend unit tests will verify that:
 
 - `OPENAI_BASE_URL` reaches `AsyncOpenAI`;
-- explicit provider configuration takes precedence over the environment;
+- `OPENAI_BASE_URL` takes precedence over explicit provider configuration;
 - absence of both preserves the SDK default behavior;
 - unified configuration retains the OpenAI base URL.
 
