@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { getStreamUrl } from "./api";
 import { useDispatch } from "react-redux";
 import { setConnectionState, setStreamError } from "../features/runSlice";
+import { isTerminalStreamEvent, shouldReportStreamError } from "./stream-lifecycle";
 
 const MAX_RECONNECT_DELAY_MS = 10000;
 const BASE_RECONNECT_DELAY_MS = 1000;
@@ -71,6 +72,24 @@ export function useRunStream(workflowId: string | null, restartKey: number = 0) 
             const eventSource = new EventSource(url);
             eventSourceRef.current = eventSource;
 
+            const completeStream = () => {
+                if (!shouldReconnectRef.current) return;
+                if (deltaBufferRef.current.size > 0) {
+                    flushDeltaBuffer();
+                }
+                dispatch({
+                    type: "run/addEvent",
+                    payload: {
+                        type: "done",
+                        workflow_id: workflowId,
+                        timestamp: new Date().toISOString(),
+                    },
+                });
+                dispatch(setConnectionState("idle"));
+                shouldReconnectRef.current = false;
+                eventSource.close();
+            };
+
             const handleEvent = (event: MessageEvent, eventType?: string) => {
                 try {
                     // Skip empty or undefined data
@@ -78,8 +97,8 @@ export function useRunStream(workflowId: string | null, restartKey: number = 0) 
                         return;
                     }
                     
-                    // Special case: [DONE] is sent as plain text, not JSON
-                    if (event.data === "[DONE]") {
+                    if (isTerminalStreamEvent(event.data, eventType)) {
+                        completeStream();
                         return;
                     }
                     
@@ -196,23 +215,8 @@ export function useRunStream(workflowId: string | null, restartKey: number = 0) 
 
             eventTypes.forEach(type => {
                 eventSource.addEventListener(type, (event: Event | MessageEvent) => {
-                    if (type === "done" || type === "STREAM_END") {
-                        if (deltaBufferRef.current.size > 0) {
-                            flushDeltaBuffer();
-                        }
-                        // Dispatch a synthetic done event to Redux
-                        dispatch({ 
-                            type: "run/addEvent", 
-                            payload: {
-                                type: "done",
-                                workflow_id: workflowId,
-                                timestamp: new Date().toISOString(),
-                            }
-                        });
-                        dispatch(setConnectionState("idle"));
-                        shouldReconnectRef.current = false;
-                        // Close the connection
-                        eventSource.close();
+                    if (isTerminalStreamEvent(undefined, type)) {
+                        completeStream();
                     } else {
                         // Pass the event type from the SSE event field
                         handleEvent(event as MessageEvent, type);
@@ -224,6 +228,9 @@ export function useRunStream(workflowId: string | null, restartKey: number = 0) 
             eventSource.onmessage = handleEvent;
 
             eventSource.onerror = () => {
+                if (!shouldReportStreamError(shouldReconnectRef.current)) {
+                    return;
+                }
                 if (deltaBufferRef.current.size > 0) {
                     flushDeltaBuffer();
                 }

@@ -26,12 +26,19 @@ class OpenAIProvider(LLMProvider):
         self.organization = config.get("organization")
         timeout = int(config.get("timeout", 60) or 60)
 
-        # Pass organization and timeout at construction time
-        self.client = AsyncOpenAI(
-            api_key=api_key,
-            organization=self.organization,
-            timeout=timeout,
-        )
+        # Environment configuration overrides the repository's provider default.
+        client_options = {
+            "api_key": api_key,
+            "organization": self.organization,
+            "timeout": timeout,
+        }
+        base_url = (
+            os.getenv("OPENAI_BASE_URL") or config.get("base_url") or ""
+        ).strip().rstrip("/")
+        if base_url:
+            client_options["base_url"] = base_url
+
+        self.client = AsyncOpenAI(**client_options)
 
         # Token encoders for different models
         self.encoders = {}

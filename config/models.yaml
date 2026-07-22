@@ -19,11 +19,11 @@ model_tiers:
     # Fast, cost-optimized models for basic tasks without reasoning capabilities
     providers:
       - provider: openai
-        model: gpt-5-nano-2025-08-07
-        priority: 2
+        model: gpt-5.5
+        priority: 1
       - provider: anthropic
         model: claude-haiku-4-5-20251001
-        priority: 1
+        priority: 2
       - provider: xai
         model: grok-4-1-fast-non-reasoning
         priority: 3
@@ -53,14 +53,14 @@ model_tiers:
     # Target allocation: 40% (not enforced - actual usage depends on complexity)
     # Standard models with good capability/cost balance, not heavy reasoning
     providers:
-      - provider: anthropic
-        model: claude-sonnet-4-6
+      - provider: openai
+        model: gpt-5.5
         priority: 1
       - provider: anthropic
-        model: claude-sonnet-4-5-20250929
+        model: claude-sonnet-4-6
         priority: 2
-      - provider: openai
-        model: gpt-5-mini-2025-08-07
+      - provider: anthropic
+        model: claude-sonnet-4-5-20250929
         priority: 3
       - provider: google
         model: gemini-2.5-flash
@@ -92,7 +92,7 @@ model_tiers:
     # Heavy thinking/reasoning models for complex tasks
     providers:
       - provider: openai
-        model: gpt-5.1
+        model: gpt-5.5
         priority: 1
       - provider: anthropic
         model: claude-opus-4-6
@@ -221,6 +221,14 @@ provider_settings:
     
 model_catalog:
   openai:
+    gpt-5.5:
+      model_id: gpt-5.5
+      tier: medium
+      context_window: 400000
+      max_tokens: 128000
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
     gpt-5.1:
       model_id: gpt-5.1
       tier: large

@@ -419,7 +419,13 @@ class LLMManager:
             p_cfg.setdefault("name", prov_name)
 
             # Base URL + timeouts for HTTP providers we instantiate locally
-            if ptype in ("openai_compatible", "xai", "anthropic", "minimax"):
+            if ptype in (
+                "openai",
+                "openai_compatible",
+                "xai",
+                "anthropic",
+                "minimax",
+            ):
                 base_url = provider_cfg.get("base_url")
                 if base_url:
                     p_cfg["base_url"] = base_url
