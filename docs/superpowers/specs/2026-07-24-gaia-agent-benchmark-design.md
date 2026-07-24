@@ -212,6 +212,7 @@ repository.
 - Dataset and output roots.
 - Benchmark, split, level, text-only filter, limit, and seed.
 - Repetition count and attempt selection policy.
+- Trace storage mode: `full_local`, `redacted`, or `metadata_only`.
 - Per-task timeout and polling interval.
 - Concurrency.
 - Resume behavior.
@@ -264,6 +265,35 @@ Trace collection is diagnostic and best-effort. Delayed persistent events or an
 unavailable timeline add a trace warning and completeness flag; they do not
 change the answer score or convert a completed Agent task into a failed case.
 
+Trace completeness is recorded explicitly:
+
+```json
+{
+  "events_available": true,
+  "timeline_available": true,
+  "events_complete": true,
+  "timeline_complete": true,
+  "tool_inputs": "not_applicable",
+  "tool_outputs": "not_applicable",
+  "trace_completeness_score": 1.0
+}
+```
+
+`events_complete` requires successful pagination through the final event page
+without a decode, ordering, or request error. `timeline_complete` requires a
+successful full timeline response with a valid event list and stats object.
+Tool input and output fields are `available`, `missing`, or `not_applicable`;
+they are applicable only when a tool call is present.
+
+`trace_completeness_score` is the number of satisfied applicable checks divided
+by the number of applicable checks. The four event/timeline checks always
+apply. Tool input and output checks enter the denominator only for attempts that
+contain tool calls.
+
+For aggregate reporting, capture success means at least one source is available,
+complete means the score is `1.0`, partial means the score is greater than zero
+and less than `1.0`, and missing means the score is zero.
+
 ### 7.6 RunManifest
 
 `manifest.json` records:
@@ -311,6 +341,8 @@ Additional commands:
 - `shannon_bench compare`: compare baseline and candidate runs case by case,
   including correctness, latency, cost, configuration, and infrastructure
   differences.
+- `shannon_bench holdout unlock`: explicitly generate per-case holdout
+  diagnostics with an audit reason and acknowledgment.
 
 CLI arguments override YAML configuration. Environment variables provide
 credentials and machine-local defaults.
@@ -359,6 +391,35 @@ to `tune`, `regression`, and `holdout`. The smoke configuration does not claim
 that a random sample is representative. Partition creation and capability
 stratification are part of the stable-baseline phase after the loader has been
 validated.
+
+### 9.1 Holdout Visibility Policy
+
+The public validation holdout is a soft process control, not a claim that public
+answers have become private. In holdout mode:
+
+- The CLI never prints expected answers or per-case correctness.
+- Attempt records omit expected answers, normalized reference values, and
+  correctness fields.
+- `failed_cases.jsonl` and per-case comparison reports are not generated.
+- The default report contains aggregate metrics only.
+- Raw Agent responses and traces remain local, but are not joined with reference
+  answers.
+
+Aggregate scoring occurs in memory. To inspect individual results, the operator
+must run:
+
+```powershell
+python -m shannon_bench holdout unlock `
+  --run-id <run_id> `
+  --reason "<reason>" `
+  --acknowledge-public-validation
+```
+
+Unlocking re-scores stored Agent answers against the external dataset, generates
+the per-case artifacts, and writes an audit record containing the time and
+reason. It cannot prevent someone from opening the public dataset directly, but
+it prevents routine benchmark commands from leaking holdout answers and
+failure identities.
 
 ## 10. Shannon Adapter
 
@@ -537,12 +598,30 @@ Outcome metrics:
 - Prompt, completion, and total tokens when provided.
 - Total cost and cost per strict-correct answer when provided by Shannon.
 
+The formal primary metric is attempt-weighted mean strict accuracy:
+
+```text
+mean_strict_accuracy =
+  sum(strict_correct for every scheduled attempt)
+  / (selected_cases * repetitions)
+```
+
+Failed, timed-out, empty, and non-compliant attempts contribute zero. This keeps
+completion failures visible in the primary score.
+
 Stability metrics when `repetitions > 1`:
 
-- Mean accuracy and standard deviation across repetitions.
+- Per-repetition strict accuracy and standard deviation.
 - Per-case answer consistency.
 - At-least-one-correct and majority-vote accuracy.
 - Route, tool-selection, and latency consistency when trace data is available.
+
+Majority-vote accuracy is an auxiliary metric. A case is majority-correct only
+when one normalized strict answer receives more than half of its scheduled
+attempts and that answer is correct. At-least-one-correct and answer consistency
+are diagnostic metrics. At-least-one-correct is never compared across runs with
+different repetition counts because it increases mechanically with more
+attempts.
 
 Process metrics derived from available trace events:
 
@@ -551,6 +630,8 @@ Process metrics derived from available trace events:
 - Tool success, failure, timeout, and retry counts.
 - Planning, replanning, budget, and stopping signals.
 - Per-event and per-workflow durations when timestamps are available.
+- Trace capture success, complete, partial, and missing rates.
+- Mean trace completeness score and missing tool input/output counts.
 
 Breakdowns:
 
@@ -564,10 +645,19 @@ Breakdowns:
 `failed_cases.jsonl` contains only failed and incorrect cases for focused reruns
 and analysis.
 
-`compare` classifies matched attempts as improved, regressed, unchanged-correct,
-or unchanged-incorrect. It reports score, latency, cost, configuration, and
-infrastructure deltas. It must reject incomparable case selections or scorer
-versions unless the user explicitly requests a diagnostic-only comparison.
+`compare` supports two explicit pairing modes:
+
+- Attempt-level comparison pairs identical case IDs and repetition indexes:
+  baseline attempt 0 with candidate attempt 0, and so on. It requires equal
+  repetition counts and is used for stability diagnosis.
+- Case-level comparison aggregates each case with the strict-majority rule,
+  then classifies it as improved, regressed, unchanged-correct, or
+  unchanged-incorrect. This is the primary regression view.
+
+Both modes report score, latency, cost, configuration, and infrastructure
+deltas. `compare` rejects incompatible case selections or scorer versions.
+Runs with different repetition counts may use aggregate mean summaries, but
+cannot produce attempt-level pairs or compare at-least-one-correct.
 
 ## 16. Security and Data Handling
 
@@ -575,10 +665,28 @@ versions unless the user explicitly requests a diagnostic-only comparison.
 - Reports never contain authorization headers or environment values.
 - GAIA data and answers are not committed to Git.
 - Error text is sanitized before it is written to summary files.
-- Event payloads, URLs, tool inputs, and tool outputs are redacted before trace
-  artifacts are written.
 - The runner does not execute arbitrary benchmark-provided code.
 - The MVP does not process attachments.
+
+Trace storage is configurable:
+
+- `full_local`: preserve URLs, queries, tool inputs, and tool outputs in the
+  external test directory for diagnosis. This is the default for local
+  development runs.
+- `redacted`: remove configured secret and personal-data patterns while
+  retaining tool names, domains, status, timing, and content hashes.
+- `metadata_only`: retain event types, counts, timings, statuses, and hashes but
+  omit content-bearing fields.
+
+Regardless of storage mode:
+
+- Shared Markdown, `cases.jsonl`, `failed_cases.jsonl`, and compare reports use
+  redacted trace projections.
+- The manifest stores only hashes and non-sensitive metadata.
+- Full local traces remain under `Shannon_selfmodified_test`, are excluded from
+  Git, and receive restrictive local filesystem permissions where supported.
+- Authorization headers, API keys, cookies, and configured secret patterns are
+  always removed, including in `full_local` mode.
 
 ## 17. Test Strategy
 
@@ -594,10 +702,15 @@ Unit tests cover:
 - Idempotent submission retry behavior.
 - Timeout and polling behavior.
 - Event pagination, timeline capture, and trace redaction.
+- Trace completeness calculation, including tool-call applicability.
+- Full-local, redacted, and metadata-only trace projections.
 - Atomic case persistence and resume.
 - Corrupt and abandoned temporary-file handling.
 - Manifest mismatch rejection.
-- Repetition and stability metrics.
+- Attempt-weighted primary score, strict-majority aggregation, and diagnostic
+  stability metrics.
+- Attempt-level and case-level baseline-candidate pairing.
+- Holdout output suppression and explicit unlock behavior.
 - JSONL, Markdown, and baseline-candidate comparison reports.
 
 A contract smoke test uses a fake HTTP server and runs the entire CLI pipeline.
@@ -630,8 +743,18 @@ The MVP is accepted when:
     successfully.
 12. Reports include outcome, stability, available process, and supported
     breakdown metrics.
-13. Unit and contract tests pass without requiring a live LLM provider.
-14. No dataset, credential, trace, or generated run artifact is added to Git.
+13. The primary metric is attempt-weighted mean strict accuracy; majority vote
+    remains auxiliary and at-least-one-correct remains diagnostic.
+14. Compare supports validated attempt-level and strict-majority case-level
+    pairing.
+15. Every trace records explicit completeness fields and reports aggregate
+    complete, partial, and missing rates.
+16. Trace storage modes preserve local diagnostic value without leaking secrets
+    into shared reports or manifests.
+17. Holdout mode suppresses per-case references and correctness until an
+    audited explicit unlock.
+18. Unit and contract tests pass without requiring a live LLM provider.
+19. No dataset, credential, trace, or generated run artifact is added to Git.
 
 ## 19. Follow-On Work
 
